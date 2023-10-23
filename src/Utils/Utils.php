@@ -3,7 +3,6 @@
 namespace WPGraphQL\Utils;
 
 use GraphQLRelay\Relay;
-use WPGraphQL\Model\Model;
 
 class Utils {
 
@@ -27,23 +26,22 @@ class Utils {
 			$query_ast = \GraphQL\Language\Parser::parse( $query );
 			$query     = \GraphQL\Language\Printer::doPrint( $query_ast );
 			return hash( $hash_algorithm, $query );
-		} catch ( \Exception $exception ) {
+		} catch ( \Throwable $exception ) {
 			return null;
 		}
-
 	}
 
 	/**
-	 * Maps new input query args and sa nitizes the input
+	 * Maps new input query args and sanitizes the input
 	 *
 	 * @param mixed|array|string $args The raw query args from the GraphQL query
 	 * @param mixed|array|string $map  The mapping of where each of the args should go
+	 * @param string[]           $skip Fields to skipped and not be added to the output array.
 	 *
 	 * @return array
 	 * @since  0.5.0
 	 */
-	public static function map_input( $args, $map ) {
-
+	public static function map_input( $args, $map, $skip = [] ) {
 		if ( ! is_array( $args ) || ! is_array( $map ) ) {
 			return [];
 		}
@@ -51,10 +49,13 @@ class Utils {
 		$query_args = [];
 
 		foreach ( $args as $arg => $value ) {
+			if ( [] !== $skip && in_array( $arg, $skip, true ) ) {
+				continue;
+			}
 
 			if ( is_array( $value ) && ! empty( $value ) ) {
 				$value = array_map(
-					function ( $value ) {
+					static function ( $value ) {
 						if ( is_string( $value ) ) {
 							$value = sanitize_text_field( $value );
 						}
@@ -75,7 +76,6 @@ class Utils {
 		}
 
 		return $query_args;
-
 	}
 
 	/**
@@ -103,27 +103,106 @@ class Utils {
 	}
 
 	/**
+	 * Format a GraphQL name according to the GraphQL spec.
+	 *
+	 * Per the GraphQL spec, characters in names are limited to Latin ASCII letter, digits, or underscores.
+	 *
+	 * @see http://spec.graphql.org/draft/#sec-Names
+	 *
+	 * @param string $name The name to format.
+	 * @param string $replacement The replacement character for invalid characters. Defaults to '_'.
+	 * @param string $regex The regex to use to match invalid characters. Defaults to '/[^A-Za-z0-9_]/i'.
+	 *
+	 * @since v1.17.0
+	 */
+	public static function format_graphql_name( string $name, string $replacement = '_', string $regex = '/[^A-Za-z0-9_]/i' ): string {
+		if ( empty( $name ) ) {
+			return '';
+		}
+
+		/**
+		 * Filter to manually format a GraphQL name according to custom rules.
+		 *
+		 * If anything other than null is returned, the result will be used for the name instead of the standard regex.
+		 *
+		 * Useful for providing custom transliteration rules that will convert non ASCII characters to ASCII.
+		 *
+		 * @param null|string $formatted_name The name to format. If not null, the result will be returned as the formatted name.
+		 * @param string $original_name       The name to format.
+		 * @param string $replacement         The replacement character for invalid characters. Defaults to '_'.
+		 * @param string $regex               The regex to use to match invalid characters. Defaults to '/[^A-Za-z0-9_]/i'.
+		 *
+		 * @return string|null
+		 */
+		$pre_format_name = apply_filters( 'graphql_pre_format_name', null, $name, $replacement, $regex );
+
+		// Check whether the filter is being used (correctly).
+		if ( ! empty( $pre_format_name ) && is_string( $pre_format_name ) ) {
+			// Don't trust the filter to return a formatted string.
+			$name = trim( sanitize_text_field( $pre_format_name ) );
+		} else {
+			// Throw a warning if someone is using the filter incorrectly.
+			if ( null !== $pre_format_name ) {
+				graphql_debug(
+					esc_html__( 'The `graphql_pre_format_name` filter must return a string or null.', 'wp-graphql' ),
+					[
+						'type'          => 'INVALID_GRAPHQL_NAME',
+						'original_name' => esc_html( $name ),
+					]
+				);
+			}
+
+			// Remove all non-alphanumeric characters.
+			$name = preg_replace( $regex, $replacement, $name );
+		}
+
+		if ( empty( $name ) ) {
+			return '';
+		}
+
+		// Replace multiple consecutive leading underscores with a single underscore, since those are reserved.
+		$name = preg_replace( '/^_+/', '_', trim( $name ) );
+
+		return ! empty( $name ) ? $name : '';
+	}
+
+	/**
 	 * Given a field name, formats it for GraphQL
 	 *
-	 * @param string $field_name The field name to format
+	 * @param string $field_name         The field name to format
+	 * @param bool   $allow_underscores  Whether the field should be formatted with underscores allowed. Default false.
 	 *
 	 * @return string
 	 */
-	public static function format_field_name( string $field_name ) {
-
-		$replaced = preg_replace( '[^a-zA-Z0-9 -]', '_', $field_name );
-
-		// If any values were replaced, use the replaced string as the new field name
-		if ( ! empty( $replaced ) ) {
-			$field_name = $replaced;
+	public static function format_field_name( string $field_name, bool $allow_underscores = false ): string {
+		// Bail if empty.
+		if ( empty( $field_name ) ) {
+			return '';
 		}
 
-		$field_name = lcfirst( $field_name );
-		$field_name = lcfirst( str_replace( '_', ' ', ucwords( $field_name, '_' ) ) );
-		$field_name = lcfirst( str_replace( '-', ' ', ucwords( $field_name, '_' ) ) );
-		$field_name = lcfirst( str_replace( ' ', '', ucwords( $field_name, ' ' ) ) );
+		$formatted_field_name = graphql_format_name( $field_name, '_', '/[^a-zA-Z0-9 -]/' );
 
-		return $field_name;
+		// If the formatted name is empty, we want to return the original value so it displays in the error.
+		if ( empty( $formatted_field_name ) ) {
+			return $field_name;
+		}
+
+		// underscores are allowed by GraphQL, but WPGraphQL has historically
+		// stripped them when formatting field names.
+		// The $allow_underscores argument allows functions to opt-in to allowing underscores
+		if ( true !== $allow_underscores ) {
+			// uppercase words separated by an underscore, then replace the underscores with a space
+			$formatted_field_name = lcfirst( str_replace( '_', ' ', ucwords( $formatted_field_name, '_' ) ) );
+		}
+
+		// uppercase words separated by a dash, then replace the dashes with a space
+		$formatted_field_name = lcfirst( str_replace( '-', ' ', ucwords( $formatted_field_name, '-' ) ) );
+
+		// uppercace words separated by a space, and replace spaces with no space
+		$formatted_field_name = lcfirst( str_replace( ' ', '', ucwords( $formatted_field_name, ' ' ) ) );
+
+		// Field names should be lcfirst.
+		return lcfirst( $formatted_field_name );
 	}
 
 	/**
@@ -135,6 +214,42 @@ class Utils {
 	 */
 	public static function format_type_name( $type_name ) {
 		return ucfirst( self::format_field_name( $type_name ) );
+	}
+
+	/**
+	 * Returns a GraphQL type name for a given WordPress template name.
+	 *
+	 * If the template name has no ASCII characters, the file name will be used instead.
+	 *
+	 * @param string $name The template name.
+	 * @param string $file The file name.
+	 * @return string The formatted type name. If the name is empty, an empty string will be returned.
+	 */
+	public static function format_type_name_for_wp_template( string $name, string $file ): string {
+		$name = ucwords( $name );
+		// Strip out not ASCII characters.
+		$name = graphql_format_name( $name, '', '/[^\w]/' );
+
+		// If replaced_name is empty, use the file name.
+		if ( empty( $name ) ) {
+			$file_parts    = explode( '.', $file );
+			$file_name     = ! empty( $file_parts[0] ) ? self::format_type_name( $file_parts[0] ) : '';
+			$replaced_name = ! empty( $file_name ) ? graphql_format_name( $file_name, '', '/[^\w]/' ) : '';
+
+			$name = ! empty( $replaced_name ) ? $replaced_name : $name;
+		}
+
+		// If the name is still empty, we don't have a valid type.
+		if ( empty( $name ) ) {
+			return '';
+		}
+
+		// Maybe prefix the name with "Template_".
+		if ( preg_match( '/^\d/', $name ) || false === strpos( strtolower( $name ), 'template' ) ) {
+			$name = 'Template_' . $name;
+		}
+
+		return $name;
 	}
 
 	/**

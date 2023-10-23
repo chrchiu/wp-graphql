@@ -1,7 +1,6 @@
 <?php
 namespace WPGraphQL\Data\Loader;
 
-use Exception;
 use WPGraphQL\Model\User;
 
 /**
@@ -15,8 +14,8 @@ class UserLoader extends AbstractDataLoader {
 	 * @param mixed $entry The User Role object
 	 * @param mixed $key The Key to identify the user role by
 	 *
-	 * @return mixed|User
-	 * @throws Exception
+	 * @return mixed|\WPGraphQL\Model\User
+	 * @throws \Exception
 	 */
 	protected function get_model( $entry, $key ) {
 		if ( $entry instanceof \WP_User ) {
@@ -50,9 +49,12 @@ class UserLoader extends AbstractDataLoader {
 		// Get public post types that are set to show in GraphQL
 		// as public users are determined by whether they've published
 		// content in one of these post types
-		$post_types = \WPGraphQL::get_allowed_post_types( 'names', [
-			'public' => true,
-		] );
+		$post_types = \WPGraphQL::get_allowed_post_types(
+			'names',
+			[
+				'public' => true,
+			] 
+		);
 
 		/**
 		 * Exclude revisions and attachments, since neither ever receive the
@@ -75,10 +77,8 @@ class UserLoader extends AbstractDataLoader {
 		global $wpdb;
 
 		$results = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.DirectQuery
-			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			// phpcs:disable WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
 			$wpdb->prepare(
-				"SELECT DISTINCT `post_author` FROM $wpdb->posts $where AND `post_author` IN ( $ids ) LIMIT $count",
+				"SELECT DISTINCT `post_author` FROM $wpdb->posts $where AND `post_author` IN ( $ids ) LIMIT $count", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
 				$keys
 			)
 		);
@@ -116,10 +116,9 @@ class UserLoader extends AbstractDataLoader {
 	 * @param array $keys
 	 *
 	 * @return array
-	 * @throws Exception
+	 * @throws \Exception
 	 */
 	public function loadKeys( array $keys ) {
-
 		if ( empty( $keys ) ) {
 			return $keys;
 		}
@@ -157,7 +156,7 @@ class UserLoader extends AbstractDataLoader {
 		 */
 		return array_reduce(
 			$keys,
-			function ( $carry, $key ) use ( $public_users ) {
+			static function ( $carry, $key ) use ( $public_users ) {
 				$user = get_user_by( 'id', $key ); // Cached via previous WP_User_Query.
 
 				if ( $user instanceof \WP_User ) {
@@ -177,5 +176,4 @@ class UserLoader extends AbstractDataLoader {
 			[]
 		);
 	}
-
 }
